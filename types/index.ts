@@ -179,7 +179,50 @@ export interface SearchResponse {
   pagination: SearchPagination;
   tookMs: number;
   indexSize: number;
-  scope: "local-index" | "live-web" | "submitted-corpus";
+  scope: "local-index" | "live-web" | "global-web" | "site-web" | "submitted-corpus";
+}
+
+/* --------------------------- global web search --------------------------- */
+
+/** A single upstream discovery source (public search APIs / HTML endpoints). */
+export type WebEngineId =
+  | "duckduckgo"
+  | "wikipedia"
+  | "hackernews"
+  | "github"
+  | "reddit"
+  | "stackexchange"
+  | "bing";
+
+export interface EngineOutcome {
+  engine: WebEngineId;
+  ok: boolean;
+  error?: string;
+  hits: number;
+  tookMs: number;
+}
+
+/** One discovered web listing (URL + title + snippet) from a live source. */
+export interface WebListing {
+  url: string;
+  title: string;
+  snippet: string;
+  engine: WebEngineId;
+  scoreHint: number; // upstream rank signal (0..1), informational only
+}
+
+export interface GlobalSearchResult extends SearchResult {
+  engine: WebEngineId;
+}
+
+export interface GlobalSearchResponse extends Omit<SearchResponse, "results"> {
+  results: GlobalSearchResult[];
+  engines: EngineOutcome[];
+  retrieved: number;
+  enriched: number;
+  cached: boolean;
+  site: string | null;
+  providerErrors: string[];
 }
 
 /* ----------------------------- crawler ------------------------------ */

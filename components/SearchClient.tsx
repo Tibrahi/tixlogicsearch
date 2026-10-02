@@ -13,14 +13,21 @@ import { useDebouncedValue } from "@/hooks/useDebounced";
 import { Badge, Button, Card, EmptyState, ErrorNote, InfoNote, Input, Select, Spinner } from "@/components/ui";
 import type { AiSearchResponse, SavedSearch, SearchHistoryItem, SearchResponse } from "@/types";
 
-type Mode = "local" | "website" | "ai";
+type Mode = "global" | "local" | "website" | "ai";
+
+const MODES: Array<{ id: Mode; label: string; hint: string }> = [
+  { id: "global", label: "Global web", hint: "Search the live internet through multiple public engines (DuckDuckGo, Bing, Wikipedia, HN, GitHub, Reddit, Stack Exchange), ranked by our BM25/TF-IDF engine." },
+  { id: "local", label: "My index", hint: "Search documents stored in this browser (IndexedDB)." },
+  { id: "website", label: "One site", hint: "Retrieve and search pages of a single website via the secure crawler." },
+  { id: "ai", label: "AI answer", hint: "Grounded AI summary over retrieved sources (requires OPENROUTER_API_KEY)." },
+];
 
 export function SearchClient() {
   const sp = useSearchParams();
   const { ready, storageError, bump } = useAppState();
 
   const [query, setQuery] = useState(sp.get("q") ?? "");
-  const [mode, setMode] = useState<Mode>((sp.get("mode") as Mode) || "local");
+  const [mode, setMode] = useState<Mode>((sp.get("mode") as Mode) || "global");
   const [domain, setDomain] = useState(sp.get("domain") ?? "");
   const [sort, setSort] = useState<"relevance" | "date" | "title">("relevance");
   const [algorithm, setAlgorithm] = useState<"bm25" | "tfidf">(localSearch.getSettingsSync().algorithm);
@@ -28,6 +35,7 @@ export function SearchClient() {
 
   const [loading, setLoading] = useState(false);
   const [response, setResponse] = useState<SearchResponse | null>(null);
+  const [globalMeta, setGlobalMeta] = useState<{ engines: Array<{ engine: string; ok: boolean; hits: number; error?: string; tookMs: number }>; retrieved: number; enriched: number; cached: boolean } | null>(null);
   const [ai, setAi] = useState<AiSearchResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -100,10 +108,25 @@ export function SearchClient() {
     setError(null);
     setNotice(null);
     setAi(null);
+    setGlobalMeta(null);
     setPage(p);
     setShowSug(false);
     try {
-      if (m === "local") {
+      if (m === "global") {
+        const params = new URLSearchParams({ q: q, limit: String(Math.max(limit, 10)), page: String(p), enrich: "true" });
+        if (dom.trim()) params.set("site", dom.trim());
+        if (algorithm) params.set("algorithm", algorithm);
+        if (sort !== "relevance") params.set("sort", sort);
+        const res = await fetch(`/api/v1/search/global?${params.toString()}`, { signal: ac.signal });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data?.error?.message ?? `Global search failed (HTTP ${res.status}).`);
+        }
+        if (!ac.signal.aborted) {
+          setResponse(data as SearchResponse);
+          setGlobalMeta({ engines: data.engines ?? [], retrieved: data.retrieved ?? 0, enriched: data.enriched ?? 0, cached: !!data.cached });
+        }
+      } else if (m === "local") {
         const res = await localSearch.search(q, { domain: dom || undefined, page: p, limit, sort, algorithm });
         if (!ac.signal.aborted) setResponse(res);
       } else if (m === "website") {
@@ -224,10 +247,8 @@ export function SearchClient() {
               </ul>
             )}
           </div>
-          <Select value={mode} onChange={(e) => setMode(e.target.value as Mode)} aria-label="Search mode" className="sm:w-40">
-            <option value="local">Local index</option>
-            <option value="website">Website search</option>
-            <option value="ai">AI answer</option>
+          <Select value={mode} onChange={(e) => setMode(e.target.value as Mode)} aria-label="Search mode" className="sm:w-44">
+            {MODES.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
           </Select>
           {loading ? (
             <Button variant="secondary" onClick={cancel}><Ban size={14} /> Cancel</Button>
@@ -262,10 +283,10 @@ export function SearchClient() {
           </button>
         </div>
 
+        <p className="mt-2 text-xs text-muted">{MODES.find((m) => m.id === mode)?.hint}</p>
         {mode === "ai" && (
-          <p className="mt-2 text-xs text-muted">
-            AI mode sends your query plus up to 6 top local snippets to the configured provider and returns a cited summary.
-            Answers are grounded only in actually indexed content; if the provider is unconfigured you will see a clear notice and normal results.
+          <p className="mt-1 text-xs text-muted">
+            AI answers are grounded only in actually indexed content; if the provider is unconfigured you will see a clear notice and normal results.
           </p>
         )}
         {mode === "website" && (
@@ -310,8 +331,25 @@ export function SearchClient() {
         </Card>
       )}
 
+      {/* Engine status strip (global mode) */}
+      {globalMeta && (
+        <Card className="py-3">
+          <div className="flex flex-wrap items-center gap-2 text-[11px]">
+            <span className="font-medium text-muted">Live sources:</span>
+            {globalMeta.engines.map((e) => (
+              <Badge key={e.engine} tone={e.ok ? "green" : "amber"} title={e.error ?? undefined}>
+                {e.engine} {e.ok ? `· ${e.hits}` : "· unavailable"}
+              </Badge>
+            ))}
+            <span className="ml-auto text-muted">
+              {globalMeta.retrieved} unique URLs discovered · {globalMeta.enriched} pages fully retrieved{globalMeta.cached ? " · served from cache" : ""}
+            </span>
+          </div>
+        </Card>
+      )}
+
       {/* Results */}
-      {loading && !response && <div className="flex justify-center py-10"><Spinner label="Searching…" /></div>}
+      {loading && !response && <div className="flex justify-center py-10"><Spinner label={mode === "global" ? "Searching the live web…" : "Searching…"} /></div>}
 
       {response && (
         <div className="space-y-3">
@@ -325,8 +363,10 @@ export function SearchClient() {
           {response.results.length === 0 ? (
             <EmptyState
               icon={<FileText size={28} className="text-muted" />}
-              title="No matching documents in your local index"
-              hint="Try fewer words, switch to Website search to retrieve fresh pages, or crawl a site from the dashboard."
+              title={mode === "global" ? "No live results matched this query" : "No matching documents in your local index"}
+              hint={mode === "global"
+                ? "Try different keywords, remove the domain filter, or check the source badges above for engines that were unavailable."
+                : "Try fewer words, switch to Global web to search the live internet, or crawl a site from the dashboard."}
             />
           ) : (
             response.results.map((r) => (
@@ -345,7 +385,10 @@ export function SearchClient() {
                       {safeHostLabel(r.url)} <ExternalLink size={11} className="inline" />
                     </p>
                   </div>
-                  <Badge tone="blue">score {r.score}</Badge>
+                  <div className="flex shrink-0 flex-col items-end gap-1">
+                    <Badge tone="blue">score {r.score}</Badge>
+                    {(r as { engine?: string }).engine ? <Badge tone="gray">{(r as { engine?: string }).engine}</Badge> : null}
+                  </div>
                 </div>
                 <p className="mt-2 text-sm text-foreground/90 leading-relaxed">
                   {highlight(r.snippet || r.description || "(no text preview available)", r.matchedTerms)}

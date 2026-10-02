@@ -128,6 +128,44 @@ export async function liveWebSearch(
   query: string,
   opts: { site?: string; maxPages?: number; depth?: number; timeoutMs?: number } & EngineOptions = {}
 ): Promise<LiveWebSearchResult | { error: string }> {
+  // Global internet retrieval (multi-engine discovery + real page enrichment).
+  const { globalWebSearch } = await import("@/lib/search/global-web");
+  const global = await globalWebSearch(query, {
+    site: opts.site,
+    limit: opts.limit,
+    page: opts.page,
+    sort: opts.sort,
+    algorithm: opts.algorithm,
+    domain: (opts as { domain?: string }).domain,
+    enrich: true,
+    enrichPages: Math.min(opts.maxPages ?? 6, 8),
+  });
+  if ("error" in global) return global;
+  const docs = new Map<string, SearchDocument>();
+  for (const r of global.results) {
+    docs.set(r.id, {
+      id: r.id, url: r.url, canonicalUrl: r.canonicalUrl, title: r.title,
+      description: r.description, content: r.snippet, headings: [], keywords: [],
+      source: r.source, language: r.language, contentHash: "", indexedAt: r.indexedAt, updatedAt: r.updatedAt,
+    });
+  }
+  return {
+    response: global,
+    documents: docs,
+    index: new InvertedIndex(),
+    pagesVisited: global.retrieved,
+    pagesFailed: global.providerErrors.length,
+    robotsNoticed: true,
+    errors: global.providerErrors,
+    tookMsTotal: global.tookMs,
+  };
+}
+
+/** Legacy single-site crawl retrieval (kept for site-scoped deep crawls). */
+export async function crawlWebSearch(
+  query: string,
+  opts: { site?: string; maxPages?: number; depth?: number; timeoutMs?: number } & EngineOptions = {}
+): Promise<LiveWebSearchResult | { error: string }> {
   const startedAt = Date.now();
   let rootUrl: string;
   if (opts.site && opts.site.trim()) {

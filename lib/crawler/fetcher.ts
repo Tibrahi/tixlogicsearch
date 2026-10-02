@@ -251,10 +251,21 @@ export async function crawlSite(startUrl: string, options: CrawlOptions): Promis
 
     const extracted = extractContent(outcome.html, item.url, outcome.finalUrl);
     extracted.truncated = extracted.truncated || !!outcome.truncated;
+    const payload = {
+      url: extracted.url,
+      canonicalUrl: extracted.canonicalUrl,
+      title: extracted.title,
+      description: extracted.description,
+      content: extracted.content.slice(0, 200_000),
+      headings: extracted.headings.slice(0, 200),
+      keywords: [],
+      language: extracted.language,
+      source: (() => { try { return new URL(extracted.finalUrl || extracted.url).hostname; } catch { return "crawl"; } })(),
+    };
     const storeStatus = await options.callbacks.onPageStored(extracted, false);
     if (storeStatus === "stored") {
       stored++;
-      results.push({ url: item.url, status: "stored", documentId: extracted.canonicalUrl });
+      results.push({ url: item.url, status: "stored", documentId: extracted.canonicalUrl, documentPayload: payload });
     } else if (storeStatus === "duplicate") {
       duplicates++;
       results.push({ url: item.url, status: "duplicate" });
